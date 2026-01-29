@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>IsleFlow Prospect Finder</title>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;500;600;700&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono&display=swap" rel="stylesheet">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Inter', sans-serif; }
+    ::-webkit-scrollbar { width: 8px; }
+    ::-webkit-scrollbar-track { background: rgba(255,255,255,0.05); }
+    ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 4px; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  
+  <script type="text/babel">
+    const { useState, useEffect, useRef } = React;
+
+    // API endpoint - uses backend proxy
+    const API_ENDPOINT = '/api/claude';
+
+    const PERSONA_TYPES = {
+      successful_unknown: { name: "Successful but Unknown", icon: "🏗️" },
+      growth_focused: { name: "Growth-Focused Executive", icon: "📈" },
+      legacy_builder: { name: "Legacy-Building Leader", icon: "🏆" }
+    };
+
+    const callClaude = async (messages, systemPrompt, useWebSearch = false) => {
+      const requestBody = {
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 4096,
+        system: systemPrompt,
+        messages: messages
+      };
+
+      if (useWebSearch) {
+        requestBody.tools = [{ type: "web_search_20250305", name: "web_search" }];
+      }
+
+      const response = await fetch(API_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(requestBody)
+      });
+
+      const data = await response.json();
+      const textContent = data.content?.filter(b => b.type === 'text')?.map(b => b.text)?.join('\n') || '';
+      return { data, textContent };
+    };
+
+    const parseJsonResponse = (text) => {
+      const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+      const jsonStr = jsonMatch ? jsonMatch[1].trim() : text.trim();
+      return JSON.parse(jsonStr);
+    };
+
+    function ProspectFinder() {
+      const [phase, setPhase] = useState('input');
+      const [region, setRegion] = useState('west-coast');
+      const [specialty, setSpecialty] = useState('commercial');
+      const [companySize, setCompanySize] = useState('25-50');
+      const [prospects, setProspects] = useState([]);
+      const [currentActivity, setCurrentActivity] = useState('');
+      const [activityLog, setActivityLog] = useState([]);
+      const [selectedProspect, setSelectedProspect] = useState(null);
+      const [bookOutline, setBookOutline] = useState(null);
+      const [generatingOutline, setGeneratingOutline] = useState(false);
+      const [error, setError] = useState(null);
+      const logRef = useRef(null);
+
+      const addLog = (message, type = 'info') => {
+        const timestamp = new Date().toLocaleTimeString();
+        setActivityLog(prev => [...prev, { message, type, timestamp }]);
+      };
+
+      useEffect(() => {
+        if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
+      }, [activityLog]);
+
+      const regions = {
+        'west-coast': { label: 'West Coast (CA, OR, WA)', query: 'California OR Oregon OR Washington' },
+        'southwest': { label: 'Southwest (AZ, NV, TX)', query: 'Arizona OR Nevada OR Texas' },
+        'midwest': { label: 'Midwest', query: 'Illinois OR Ohio OR Michigan' },
+        'northeast': { label: 'Northeast', query: 'New York OR Massachusetts OR Pennsylvania' },
+        'southeast': { label: 'Southeast', query: 'Florida OR Georgia OR North Carolina' },
+        'canada': { label: 'Canada', query: 'Canada' }
+      };
+
+      const specialties = {
+        'commercial': 'Commercial Construction',
+        'residential': 'Residential / Custom Homes',
+        'industrial': 'Industrial Construction',
+        'infrastructure': 'Infrastructure / Civil',
+        'specialty': 'Specialty Contractors',
+        'healthcare': 'Healthcare Construction',
+        'renovation': 'Renovation / Restoration'
+      };
+
+      const companySizes = {
+        '5-25': '$5M - $25M Revenue',
+        '25-50': '$25M - $50M Revenue',
+        '50-100': '$50M - $100M Revenue',
+        '100+': '$100M+ Revenue'
+      };
+
+      const runSearch = async () => {
+        setPhase('searching');
+        setActivityLog([]);
+        setProspects([]);
+        setError(null);
+
+        try {
+          addLog('🔍 Initiating prospect search with Claude AI...', 'start');
+          addLog(`Region: ${regions[region].label}`, 'info');
+          addLog(`Specialty: ${specialties[specialty]}`, 'info');
+
+          setCurrentActivity('Searching for construction companies...');
+          addLog('🌐 Searching web for construction companies...', 'search');
+
+          const searchSystemPrompt = `You are a business research assistant helping identify construction company executives who would be ideal candidates to write a professional book. Target: Construction Company CEOs, Owners, Presidents. Company Size: ${companySizes[companySize]}. Geographic: ${regions[region].label}. Specialty: ${specialties[specialty]}. Respond ONLY with valid JSON.`;
+
+          const searchPrompt = `Search for ${specialties[specialty].toLowerCase()} companies in ${regions[region].query} with approximately ${companySizes[companySize]} in revenue. Find real companies with identifiable CEOs, owners, or presidents. Return ONLY a JSON array of 10-15 companies: [{"company":"Name","location":"City, State","leader_name":"Name","leader_title":"Title","source":"source"}]`;
+
+          const searchResult = await callClaude([{ role: 'user', content: searchPrompt }], searchSystemPrompt, true);
+          addLog('✓ Initial search complete', 'success');
+          
+          let companies = [];
+          try {
+            companies = parseJsonResponse(searchResult.textContent);
+            addLog(`Found ${companies.length} potential companies`, 'success');
+          } catch (e) {
+            addLog('⚠️ Retrying search...', 'info');
+            const retryResult = await callClaude(
+              [{ role: 'user', content: `List 10 real ${specialties[specialty].toLowerCase()} companies in ${regions[region].label} with their CEO/Owner names. Format as JSON array: [{"company":"Name","location":"City, ST","leader_name":"Name","leader_title":"Title"}]` }],
+              'Respond only with a JSON array.',
+              true
+            );
+            companies = parseJsonResponse(retryResult.textContent);
+          }
+
+          setPhase('researching');
+          const researchedProspects = [];
+
+          for (let i = 0; i < Math.min(companies.length, 15); i++) {
+            const company = companies[i];
+            setCurrentActivity(`Researching ${company.leader_name} at ${company.company}...`);
+            addLog(`📋 Researching: ${company.leader_name} (${company.company})`, 'research');
+
+            const researchPrompt = `Research ${company.leader_name}, ${company.leader_title} of ${company.company} in ${company.location}. Search for company details, leader background, thought leadership signals (LinkedIn, podcasts, speaking, awards). Return JSON: {"name":"","title":"","company":"","location":"","companySize":"","yearsExperience":0,"specialty":"","linkedinActive":false,"podcastAppearances":0,"speakingEngagements":0,"recentNews":"","strengths":[],"potentialBookTopics":[],"persona":"successful_unknown|growth_focused|legacy_builder","score":0-100,"decisionMaker":{"name":"","title":"","email":"","linkedin":""},"contact":{"name":"","role":"","email":"","linkedin":""},"reasoning":""}`;
+
+            try {
+              const researchResult = await callClaude([{ role: 'user', content: researchPrompt }], 'Research this executive. Respond ONLY with valid JSON.', true);
+              const prospect = parseJsonResponse(researchResult.textContent);
+              prospect.id = i + 1;
+              
+              if (!prospect.decisionMaker) {
+                prospect.decisionMaker = { name: prospect.name, title: prospect.title, email: '', linkedin: '' };
+              }
+              if (!prospect.contact) {
+                prospect.contact = { ...prospect.decisionMaker, role: prospect.title };
+              }
+              
+              researchedProspects.push(prospect);
+              addLog(`   └─ Score: ${prospect.score}/100`, 'detail');
+              setProspects([...researchedProspects].sort((a, b) => b.score - a.score));
+            } catch (e) {
+              addLog(`   └─ ⚠️ Could not research this prospect`, 'detail');
+            }
+          }
+
+          setPhase('evaluating');
+          addLog('🎯 Final ranking...', 'evaluate');
+          setProspects([...researchedProspects].sort((a, b) => b.score - a.score));
+          addLog(`✅ Found ${researchedProspects.length} qualified prospects!`, 'success');
+          setPhase('results');
+          setCurrentActivity('');
+
+        } catch (err) {
+          console.error('Search error:', err);
+          setError(err.message || 'An error occurred');
+          addLog(`❌ Error: ${err.message}`, 'error');
+          setPhase('input');
+        }
+      };
+
+      const generateBookOutline = async (prospect) => {
+        setSelectedProspect(prospect);
+        setGeneratingOutline(true);
+        setBookOutline(null);
+
+        try {
+          const outlinePrompt = `Create a book concept for ${prospect.name}, ${prospect.title} of ${prospect.company}. Background: ${prospect.yearsExperience} years, ${prospect.specialty}, strengths: ${prospect.strengths?.join(', ')}. Return JSON: {"title":"","subtitle":"","introHook":"3-4 sentences in first person","parts":[{"partNumber":"I","partTitle":"","chapters":[{"number":1,"title":""}]}]}`;
+          
+          const outlineResult = await callClaude([{ role: 'user', content: outlinePrompt }], 'Create personalized book concept. Respond ONLY with JSON.', false);
+          setBookOutline(parseJsonResponse(outlineResult.textContent));
+        } catch (err) {
+          setBookOutline({
+            title: `Building Excellence: The ${prospect.company} Story`,
+            subtitle: `Leadership Lessons from ${prospect.yearsExperience} Years in ${prospect.specialty}`,
+            introHook: `After ${prospect.yearsExperience} years building ${prospect.company}, I've learned that success isn't about being the biggest—it's about being the builder clients trust.`,
+            parts: [
+              { partNumber: "I", partTitle: "THE FOUNDATION", chapters: [{ number: 1, title: `From First Jobsite to ${prospect.company}` }, { number: 2, title: "The Lesson That Changed Everything" }] },
+              { partNumber: "II", partTitle: "THE CRAFT", chapters: [{ number: 3, title: `Mastering ${prospect.specialty}` }, { number: 4, title: "Building a Competitive Edge" }] },
+              { partNumber: "III", partTitle: "THE BUSINESS", chapters: [{ number: 5, title: "Building a Team That Delivers" }, { number: 6, title: "Winning Projects Others Can't" }] },
+              { partNumber: "IV", partTitle: "THE LEGACY", chapters: [{ number: 7, title: `What's Next for ${prospect.company}` }, { number: 8, title: "Advice to the Next Generation" }] }
+            ]
+          });
+        }
+        setGeneratingOutline(false);
+      };
+
+      const copyOutlineToClipboard = () => {
+        if (!bookOutline || !selectedProspect) return;
+        const partsText = bookOutline.parts?.map(part => 
+          `PART ${part.partNumber}: ${part.partTitle}\n${part.chapters.map(ch => `   Ch ${ch.number}: ${ch.title}`).join('\n')}`
+        ).join('\n\n') || '';
+        const text = `📖 "${bookOutline.title}"\nby ${selectedProspect.name}\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\nINTRODUCTION\n\n"${bookOutline.introHook}"\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n${partsText}\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\nCONTACT\n${selectedProspect.decisionMaker?.name || selectedProspect.name}\n${selectedProspect.decisionMaker?.email || ''}\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\nisleflow.com`;
+        navigator.clipboard.writeText(text);
+        alert('Copied!');
+      };
+
+      const styles = {
+        container: { minHeight: '100vh', background: 'linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%)', fontFamily: "'Playfair Display', serif", color: '#f8f8f2', padding: 0 },
+        header: { background: 'rgba(0,0,0,0.3)', borderBottom: '1px solid rgba(255,255,255,0.1)', padding: '24px 48px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' },
+        logo: { fontSize: '28px', fontWeight: '700', color: '#e94560' },
+        main: { maxWidth: '1400px', margin: '0 auto', padding: '48px' },
+        title: { fontSize: '48px', fontWeight: '700', marginBottom: '16px', background: 'linear-gradient(90deg, #f8f8f2, #e94560)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' },
+        inputSection: { background: 'rgba(255,255,255,0.05)', borderRadius: '16px', padding: '32px', marginBottom: '32px', border: '1px solid rgba(255,255,255,0.1)' },
+        select: { padding: '14px 16px', fontSize: '16px', fontFamily: "'Inter', sans-serif", background: 'rgba(255,255,255,0.1)', border: '1px solid rgba(255,255,255,0.2)', borderRadius: '8px', color: '#fff', cursor: 'pointer', width: '100%' },
+        button: { padding: '16px 48px', fontSize: '16px', fontFamily: "'Inter', sans-serif", fontWeight: '600', background: 'linear-gradient(135deg, #e94560 0%, #ff6b6b 100%)', border: 'none', borderRadius: '8px', color: '#fff', cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '1px' },
+        progressSection: { background: 'rgba(0,0,0,0.3)', borderRadius: '16px', padding: '24px', marginBottom: '32px' },
+        prospectCard: { background: 'rgba(255,255,255,0.05)', borderRadius: '16px', padding: '24px', border: '1px solid rgba(255,255,255,0.1)', cursor: 'pointer', transition: 'all 0.3s' },
+        modal: { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '24px' },
+        modalContent: { background: 'linear-gradient(135deg, #1a1a2e 0%, #16213e 100%)', borderRadius: '24px', maxWidth: '800px', width: '100%', maxHeight: '90vh', overflowY: 'auto', border: '1px solid rgba(255,255,255,0.1)' }
+      };
+
+      const getLogColor = (type) => {
+        const colors = { start: '#4ade80', success: '#4ade80', search: '#60a5fa', research: '#fbbf24', evaluate: '#e94560', detail: 'rgba(255,255,255,0.5)', error: '#ef4444' };
+        return colors[type] || 'rgba(255,255,255,0.8)';
+      };
+
+      return (
+        <div style={styles.container}>
+          <header style={styles.header}>
+            <div>
+              <div style={styles.logo}>IsleFlow</div>
+              <div style={{ fontSize: '12px', fontFamily: "'Inter', sans-serif", color: 'rgba(255,255,255,0.6)', letterSpacing: '2px', textTransform: 'uppercase' }}>Prospect Research Suite</div>
+            </div>
+            {prospects.length > 0 && <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '14px', color: 'rgba(255,255,255,0.6)' }}>{prospects.length} prospects found</span>}
+          </header>
+
+          <main style={styles.main}>
+            <h1 style={styles.title}>Find Your Ideal Book Authors</h1>
+            <p style={{ fontSize: '20px', fontFamily: "'Inter', sans-serif", fontWeight: '300', color: 'rgba(255,255,255,0.7)', marginBottom: '48px', maxWidth: '600px', lineHeight: '1.6' }}>
+              AI-powered search finds real construction executives ready to build their authority through a professionally published book.
+            </p>
+
+            {error && <div style={{ background: 'rgba(239, 68, 68, 0.2)', border: '1px solid rgba(239, 68, 68, 0.5)', borderRadius: '12px', padding: '16px', marginBottom: '24px', fontFamily: "'Inter', sans-serif", color: '#fca5a5' }}>⚠️ {error}</div>}
+
+            <div style={styles.inputSection}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '24px', marginBottom: '24px' }}>
+                <div>
+                  <label style={{ fontSize: '13px', fontFamily: "'Inter', sans-serif", fontWeight: '600', color: 'rgba(255,255,255,0.8)', textTransform: 'uppercase', letterSpacing: '1px', display: 'block', marginBottom: '8px' }}>Region</label>
+                  <select style={styles.select} value={region} onChange={(e) => setRegion(e.target.value)} disabled={phase !== 'input' && phase !== 'results'}>
+                    {Object.entries(regions).map(([key, val]) => <option key={key} value={key} style={{ background: '#1a1a2e' }}>{val.label}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label style={{ fontSize: '13px', fontFamily: "'Inter', sans-serif", fontWeight: '600', color: 'rgba(255,255,255,0.8)', textTransform: 'uppercase', letterSpacing: '1px', display: 'block', marginBottom: '8px' }}>Specialty</label>
+                  <select style={styles.select} value={specialty} onChange={(e) => setSpecialty(e.target.value)} disabled={phase !== 'input' && phase !== 'results'}>
+                    {Object.entries(specialties).map(([key, val]) => <option key={key} value={key} style={{ background: '#1a1a2e' }}>{val}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label style={{ fontSize: '13px', fontFamily: "'Inter', sans-serif", fontWeight: '600', color: 'rgba(255,255,255,0.8)', textTransform: 'uppercase', letterSpacing: '1px', display: 'block', marginBottom: '8px' }}>Company Size</label>
+                  <select style={styles.select} value={companySize} onChange={(e) => setCompanySize(e.target.value)} disabled={phase !== 'input' && phase !== 'results'}>
+                    {Object.entries(companySizes).map(([key, val]) => <option key={key} value={key} style={{ background: '#1a1a2e' }}>{val}</option>)}
+                  </select>
+                </div>
+              </div>
+              <button style={{ ...styles.button, opacity: (phase !== 'input' && phase !== 'results') ? 0.5 : 1 }} onClick={runSearch} disabled={phase !== 'input' && phase !== 'results'}>
+                {phase === 'input' || phase === 'results' ? '🔍 Search for Real Prospects' : '⏳ Searching...'}
+              </button>
+            </div>
+
+            {(phase !== 'input' && phase !== 'results') && (
+              <div style={styles.progressSection}>
+                <div style={{ marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '16px' }}>
+                  <div style={{ width: '12px', height: '12px', borderRadius: '50%', background: '#4ade80', animation: 'pulse 1s infinite' }} />
+                  <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '14px' }}>{currentActivity || 'Processing...'}</span>
+                </div>
+                <div ref={logRef} style={{ height: '200px', overflowY: 'auto', fontFamily: "'JetBrains Mono', monospace", fontSize: '13px', lineHeight: '1.8' }}>
+                  {activityLog.map((log, i) => (
+                    <div key={i} style={{ padding: '4px 0', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
+                      <span style={{ color: 'rgba(255,255,255,0.4)', marginRight: '12px' }}>[{log.timestamp}]</span>
+                      <span style={{ color: getLogColor(log.type) }}>{log.message}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {phase === 'results' && prospects.length > 0 && (
+              <>
+                <h2 style={{ fontSize: '32px', marginBottom: '8px' }}>Top Prospects</h2>
+                <p style={{ fontFamily: "'Inter', sans-serif", color: 'rgba(255,255,255,0.6)', marginBottom: '32px' }}>Click any prospect to generate a personalized book outline.</p>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(380px, 1fr))', gap: '24px' }}>
+                  {prospects.map((prospect, index) => (
+                    <div key={prospect.id} style={styles.prospectCard} onClick={() => generateBookOutline(prospect)}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '16px' }}>
+                        <div>
+                          <div style={{ fontSize: '12px', fontFamily: "'Inter', sans-serif", color: '#e94560', marginBottom: '4px' }}>#{index + 1} • {PERSONA_TYPES[prospect.persona]?.icon} {PERSONA_TYPES[prospect.persona]?.name}</div>
+                          <h3 style={{ fontSize: '22px', marginBottom: '4px' }}>{prospect.name}</h3>
+                          <div style={{ fontFamily: "'Inter', sans-serif", fontSize: '14px', color: 'rgba(255,255,255,0.7)' }}>{prospect.title}</div>
+                        </div>
+                        <div style={{ width: '60px', height: '60px', borderRadius: '50%', background: 'linear-gradient(135deg, #e94560, #ff6b6b)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '20px', fontWeight: '700', fontFamily: "'Inter', sans-serif" }}>{prospect.score}</div>
+                      </div>
+                      <div style={{ fontFamily: "'Inter', sans-serif", fontSize: '15px', marginBottom: '8px' }}>{prospect.company}</div>
+                      <div style={{ fontFamily: "'Inter', sans-serif", fontSize: '13px', color: 'rgba(255,255,255,0.6)', marginBottom: '16px' }}>{prospect.location}</div>
+                      {prospect.recentNews && <div style={{ fontFamily: "'Inter', sans-serif", fontSize: '13px', color: 'rgba(255,255,255,0.7)' }}>📰 {prospect.recentNews}</div>}
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+
+            {selectedProspect && (generatingOutline || bookOutline) && (
+              <div style={styles.modal} onClick={() => { setSelectedProspect(null); setBookOutline(null); }}>
+                <div style={styles.modalContent} onClick={(e) => e.stopPropagation()}>
+                  {generatingOutline ? (
+                    <div style={{ padding: '80px', textAlign: 'center' }}>
+                      <div style={{ fontSize: '48px', marginBottom: '24px' }}>📚</div>
+                      <div style={{ fontFamily: "'Inter', sans-serif", fontSize: '18px' }}>Generating outline for {selectedProspect.name}...</div>
+                    </div>
+                  ) : bookOutline && (
+                    <div style={{ padding: '32px' }}>
+                      <div style={{ textAlign: 'center', marginBottom: '24px' }}>
+                        <span style={{ fontSize: '28px' }}>📖</span>
+                        <h2 style={{ fontSize: '28px', margin: '12px 0 8px' }}>"{bookOutline.title}"</h2>
+                        <p style={{ fontFamily: "'Inter', sans-serif", color: 'rgba(255,255,255,0.6)', fontStyle: 'italic' }}>{bookOutline.subtitle}</p>
+                        <p style={{ color: '#e94560', marginTop: '8px' }}>by {selectedProspect.name}</p>
+                      </div>
+                      
+                      <div style={{ background: 'rgba(255,255,255,0.03)', borderRadius: '12px', padding: '20px', marginBottom: '24px' }}>
+                        <h4 style={{ color: '#e94560', fontSize: '12px', letterSpacing: '1px', marginBottom: '12px' }}>INTRODUCTION</h4>
+                        <p style={{ fontStyle: 'italic', lineHeight: '1.8' }}>"{bookOutline.introHook}"</p>
+                      </div>
+
+                      <div style={{ background: 'rgba(233, 69, 96, 0.08)', borderRadius: '12px', padding: '24px', marginBottom: '24px' }}>
+                        <h4 style={{ color: '#e94560', fontSize: '12px', letterSpacing: '1px', marginBottom: '16px', textAlign: 'center' }}>CONTENTS</h4>
+                        {bookOutline.parts?.map((part, i) => (
+                          <div key={i} style={{ marginBottom: '16px' }}>
+                            <div style={{ color: '#e94560', fontSize: '12px', fontWeight: '600', marginBottom: '8px' }}>PART {part.partNumber}: {part.partTitle}</div>
+                            {part.chapters.map(ch => (
+                              <div key={ch.number} style={{ padding: '6px 0 6px 20px', display: 'flex' }}>
+                                <span style={{ color: 'rgba(255,255,255,0.4)', minWidth: '45px', fontFamily: "'Inter', sans-serif", fontSize: '13px' }}>Ch {ch.number}</span>
+                                <span style={{ fontSize: '15px' }}>{ch.title}</span>
+                              </div>
+                            ))}
+                          </div>
+                        ))}
+                      </div>
+
+                      <div style={{ display: 'flex', gap: '16px' }}>
+                        <button style={styles.button} onClick={copyOutlineToClipboard}>📋 Copy Outline</button>
+                        <button style={{ ...styles.button, background: 'rgba(255,255,255,0.1)' }} onClick={() => { setSelectedProspect(null); setBookOutline(null); }}>Close</button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </main>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<ProspectFinder />);
+  </script>
+</body>
+</html>
